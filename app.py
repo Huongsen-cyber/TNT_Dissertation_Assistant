@@ -1,6 +1,10 @@
 import streamlit as st
 import google.generativeai as genai
 from pypdf import PdfReader
+# --- THÊM THƯ VIỆN XỬ LÝ WORD ---
+from docx import Document
+from io import BytesIO
+# --------------------------------
 
 # --- CẤU HÌNH TRANG ---
 st.set_page_config(
@@ -28,7 +32,7 @@ with st.sidebar:
     
     api_key = st.text_input("Nhập Google AI API Key:", type="password")
     
-    # --- ĐOẠN CODE KIỂM TRA MODEL (ĐÃ CHUYỂN VỀ ĐÚNG CHỖ) ---
+    # Nút kiểm tra model (Giữ lại cho bạn)
     if api_key:
         if st.button("🔴 Kiểm tra tên Model"):
             try:
@@ -38,7 +42,6 @@ with st.sidebar:
                 st.code(models)
             except Exception as e:
                 st.error(f"Lỗi Key: {e}")
-    # --------------------------------------------------------
 
     st.divider()
     
@@ -106,7 +109,7 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- XỬ LÝ CHAT ---
+# --- XỬ LÝ CHAT & XUẤT FILE ---
 if prompt := st.chat_input("Hỏi về tài liệu hoặc yêu cầu viết..."):
     
     if not api_key:
@@ -123,10 +126,10 @@ if prompt := st.chat_input("Hỏi về tài liệu hoặc yêu cầu viết...")
         "max_output_tokens": 8192,
     }
 
-    # --- ĐÃ SỬA TÊN MODEL THÀNH BẢN ỔN ĐỊNH NHẤT ---
     try:
+        # Model Gemini 2.0 Flash (Bản xịn nhất của bạn)
         model = genai.GenerativeModel(
-            model_name="models/gemini-2.0-flash", # Sửa từ 'latest' thành '001' để tránh lỗi 404
+            model_name="models/gemini-2.0-flash", 
             generation_config=generation_config,
             system_instruction=system_instruction
         )
@@ -139,7 +142,6 @@ if prompt := st.chat_input("Hỏi về tài liệu hoặc yêu cầu viết...")
             message_placeholder = st.empty()
             full_response = ""
             
-            # Gửi lịch sử chat
             chat_history = [
                 {"role": m["role"], "parts": [m["content"]]} 
                 for m in st.session_state.messages if m["role"] != "system"
@@ -155,6 +157,25 @@ if prompt := st.chat_input("Hỏi về tài liệu hoặc yêu cầu viết...")
             
             message_placeholder.markdown(full_response)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+            # --- TÍNH NĂNG MỚI: TẠO FILE WORD ---
+            # 1. Tạo file word ảo trong bộ nhớ
+            doc = Document()
+            doc.add_heading('Dissertation Assistant Draft', 0) # Tiêu đề file
+            doc.add_paragraph(full_response) # Nội dung AI trả lời
+            
+            # 2. Lưu vào bộ đệm (RAM)
+            bio = BytesIO()
+            doc.save(bio)
+            
+            # 3. Hiển thị nút tải về
+            st.download_button(
+                label="📥 Tải câu trả lời này về máy (.docx)",
+                data=bio.getvalue(),
+                file_name="Luan_van_draft.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+            # --------------------------------------
             
     except Exception as e:
         st.error(f"Đã xảy ra lỗi hệ thống: {e}")
