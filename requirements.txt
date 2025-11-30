@@ -6,3 +6,5 @@ SpeechRecognition
 gTTS
 streamlit-mic-recorder
 pydub
+google-api-python-client
+google-auth
