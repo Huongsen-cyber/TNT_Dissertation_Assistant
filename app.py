@@ -10,6 +10,7 @@ import speech_recognition as sr
 from gtts import gTTS
 import tempfile
 import os
+from pydub import AudioSegment # Thư viện mới để chuyển đổi âm thanh
 # --------------------------------
 
 # --- CẤU HÌNH TRANG ---
@@ -37,7 +38,6 @@ with st.sidebar:
     
     api_key = st.text_input("Nhập Google AI API Key:", type="password")
     
-    # Nút kiểm tra model (Giữ lại cho bạn phòng hờ)
     if api_key:
         if st.button("🔴 Kiểm tra Model"):
             try:
@@ -64,7 +64,6 @@ with st.sidebar:
     
     st.divider()
     
-    # 1. Chế độ
     work_mode = st.radio(
         "Quy trình xử lý:",
         ["Research (Nghiên cứu)", "Drafting (Viết nháp)", "Academic Review (Phản biện)", "LaTeX Conversion"]
@@ -72,7 +71,6 @@ with st.sidebar:
     
     st.divider()
     
-    # 2. Upload
     st.subheader("📂 Tài liệu tham khảo")
     uploaded_files = st.file_uploader("Tải lên PDF:", type="pdf", accept_multiple_files=True)
     
@@ -118,24 +116,33 @@ prompt = None
 
 # 1. Kiểm tra xem có dữ liệu âm thanh từ Sidebar không
 if audio_bytes and audio_bytes['bytes']:
-    with st.spinner("🎧 Đang nghe bạn nói..."):
-        # Lưu file tạm để thư viện SpeechRecognition đọc
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-            temp_audio.write(audio_bytes['bytes'])
-            temp_audio_path = temp_audio.name
-        
-        # Dùng Google để chuyển Âm thanh -> Văn bản
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(temp_audio_path) as source:
-            audio_data = recognizer.record(source)
-            try:
+    with st.spinner("🎧 Đang xử lý âm thanh..."):
+        try:
+            # BƯỚC QUAN TRỌNG: CHUYỂN ĐỔI ĐỊNH DẠNG ÂM THANH
+            # 1. Lưu file gốc (thường là WebM)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_webm:
+                temp_webm.write(audio_bytes['bytes'])
+                temp_webm_path = temp_webm.name
+
+            # 2. Chuyển đổi sang WAV bằng Pydub
+            wav_path = temp_webm_path.replace(".webm", ".wav")
+            audio = AudioSegment.from_file(temp_webm_path)
+            audio.export(wav_path, format="wav")
+
+            # 3. Dùng SpeechRecognition đọc file WAV
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(wav_path) as source:
+                audio_data = recognizer.record(source)
                 # Nhận diện tiếng Việt
                 voice_text = recognizer.recognize_google(audio_data, language="vi-VN")
-                prompt = voice_text # Gán văn bản nói vào biến prompt
-                # Xóa file tạm
-                os.remove(temp_audio_path)
-            except Exception as e:
-                st.warning("Không nghe rõ, vui lòng nói lại hoặc gõ phím.")
+                prompt = voice_text 
+            
+            # Dọn dẹp file rác
+            os.remove(temp_webm_path)
+            os.remove(wav_path)
+
+        except Exception as e:
+            st.warning(f"Không nghe rõ hoặc lỗi định dạng: {e}")
 
 # 2. Nếu không nói, thì kiểm tra ô chat nhập phím
 if not prompt:
@@ -149,18 +156,15 @@ if prompt:
         
     genai.configure(api_key=api_key)
     
-    # Hiển thị câu hỏi của người dùng
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # AI Trả lời
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
         
         try:
-            # Dùng model xịn nhất bạn có
             model = genai.GenerativeModel(
                 model_name="models/gemini-2.0-flash", 
                 system_instruction=system_instruction
@@ -185,7 +189,6 @@ if prompt:
             bio = BytesIO()
             doc.save(bio)
             
-            # Chia cột: Cột trái tải Word, Cột phải Đọc Tiếng
             col1, col2 = st.columns([1, 1])
             with col1:
                 st.download_button(
@@ -195,19 +198,13 @@ if prompt:
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
             
-            # --- TÍNH NĂNG 2: ĐỌC THÀNH TIẾNG (TTS) - KHÔNG GIỚI HẠN ---
+            # --- TÍNH NĂNG 2: ĐỌC THÀNH TIẾNG (TTS) ---
             with col2:
                 try:
-                    # Hiển thị thông báo đang xử lý để người dùng chờ
-                    with st.spinner("🔊 Đang tạo giọng đọc (vui lòng chờ chút nếu văn bản dài)..."):
-                        # Xóa bỏ giới hạn ký tự, ép máy đọc toàn bộ
+                    with st.spinner("🔊 Đang tạo giọng đọc..."):
                         tts = gTTS(text=full_response, lang='vi')
-                        
-                        # Lưu vào bộ nhớ đệm
                         mp3_fp = BytesIO()
                         tts.write_to_fp(mp3_fp)
-                        
-                        # Hiển thị trình phát nhạc
                         st.audio(mp3_fp, format='audio/mp3')
                 except Exception as e:
                     st.error(f"Lỗi tạo âm thanh: {e}")
