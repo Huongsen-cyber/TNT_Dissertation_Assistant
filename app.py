@@ -98,7 +98,7 @@ def read_drive_file(file_id, filename):
         elif filename.endswith(".docx"):
             return get_docx_content(file_stream)
         else:
-            return "⚠️ Định dạng chưa hỗ trợ đọc (chỉ PDF/DOCX)."
+            return "" # Bỏ qua file không đọc được
     except Exception as e:
         return f"Lỗi đọc file: {e}"
 
@@ -142,58 +142,93 @@ with st.sidebar:
     work_mode = st.radio("Quy trình:", ["Research", "Drafting", "Academic Review", "LaTeX Conversion"])
     
     st.divider()
-    # --- TÍNH NĂNG MỚI: CHỌN NGUỒN TÀI LIỆU ---
     st.subheader("📂 Nguồn Tài liệu")
-    source_option = st.radio("Chọn nguồn:", ["Tải từ máy tính (Upload)", "Chọn từ Google Drive"])
+    source_option = st.radio("Chọn nguồn:", ["Tải từ máy tính", "Google Drive (Cá nhân)", "Google Drive (Toàn bộ thư mục)"])
     
     if 'saved_files' not in st.session_state: st.session_state.saved_files = []
-    context_text = ""
+    
+    # Biến lưu nội dung toàn cục
+    if 'global_context' not in st.session_state: st.session_state.global_context = ""
 
     # --- LOGIC NGUỒN TÀI LIỆU ---
-    if source_option == "Tải từ máy tính (Upload)":
+    
+    # 1. TẢI TỪ MÁY TÍNH
+    if source_option == "Tải từ máy tính":
         uploaded_files = st.file_uploader("Upload PDF/Word:", type=["pdf", "docx"], accept_multiple_files=True)
         if uploaded_files:
             with st.spinner("Đang xử lý & Auto-Save..."):
+                temp_context = ""
                 for f in uploaded_files:
                     # Auto-Save
                     if f.name not in st.session_state.saved_files:
                         fid = upload_to_drive(f, f.name)
                         if "Error" not in fid:
-                            st.toast(f"✅ Đã lưu '{f.name}' lên Drive!", icon="☁️")
+                            st.toast(f"✅ Đã lưu '{f.name}'!", icon="☁️")
                             st.session_state.saved_files.append(f.name)
                     # Đọc
                     content = get_file_content(f)
-                    context_text += f"\n--- TÀI LIỆU: {f.name} ---\n{content}\n"
+                    temp_context += f"\n--- TÀI LIỆU: {f.name} ---\n{content}\n"
+                
+                st.session_state.global_context = temp_context
                 st.success(f"Đã nạp {len(uploaded_files)} file!")
 
-    else: # Chọn từ Drive
-        with st.spinner("Đang tải danh sách file từ Drive..."):
+    # 2. CHỌN 1 FILE TỪ DRIVE
+    elif source_option == "Google Drive (Cá nhân)":
+        with st.spinner("Đang tải danh sách..."):
             drive_files = list_drive_files()
             if drive_files:
                 file_opts = {f['name']: f['id'] for f in drive_files}
-                selected_name = st.selectbox("Chọn file để đọc:", list(file_opts.keys()))
+                selected_name = st.selectbox("Chọn file:", list(file_opts.keys()))
                 
                 if st.button("📖 Đọc file này"):
-                    with st.spinner("Đang đọc nội dung..."):
+                    with st.spinner("Đang đọc..."):
                         content = read_drive_file(file_opts[selected_name], selected_name)
-                        # Lưu vào biến context để AI hiểu
-                        context_text += f"\n--- DRIVE DOC: {selected_name} ---\n{content}\n"
-                        # Hiển thị thông báo
+                        st.session_state.global_context = f"\n--- DRIVE DOC: {selected_name} ---\n{content}\n"
                         st.success(f"Đã đọc xong '{selected_name}'!")
-                        with st.expander("Xem nội dung trích xuất"): 
-                            st.write(content[:1000] + "...")
-            else: st.warning("Thư mục Drive trống hoặc không truy cập được.")
+            else: st.warning("Thư mục trống.")
+
+    # 3. ĐỌC TOÀN BỘ THƯ MỤC (TÍNH NĂNG MỚI)
+    elif source_option == "Google Drive (Toàn bộ thư mục)":
+        st.info("Tính năng này sẽ đọc TẤT CẢ file trong thư mục để đối chiếu tổng hợp.")
+        if st.button("📚 Đọc TẤT CẢ file để đối chiếu"):
+            drive_files = list_drive_files()
+            if drive_files:
+                progress_bar = st.progress(0)
+                temp_all_context = ""
+                total_files = len(drive_files)
+                
+                status_text = st.empty()
+                
+                for i, file_info in enumerate(drive_files):
+                    file_name = file_info['name']
+                    file_id = file_info['id']
+                    status_text.text(f"⏳ Đang đọc ({i+1}/{total_files}): {file_name}...")
+                    
+                    content = read_drive_file(file_id, file_name)
+                    if content:
+                        temp_all_context += f"\n=== TÀI LIỆU ĐỐI CHIẾU: {file_name} ===\n{content}\n"
+                    
+                    progress_bar.progress((i + 1) / total_files)
+                
+                st.session_state.global_context = temp_all_context
+                status_text.text("✅ Đã đọc xong tất cả!")
+                st.success(f"Đã nạp {total_files} tài liệu vào bộ nhớ để đối chiếu!")
+            else:
+                st.warning("Thư mục trống.")
 
 # --- MAIN APP ---
 system_instruction = "Bạn là trợ lý học thuật Dissertation Master AI chuyên sâu."
 if work_mode == "LaTeX Conversion": system_instruction += " Chuyển đổi sang LaTeX."
 elif work_mode == "Academic Review": system_instruction += " Phản biện logic."
-if context_text: system_instruction += f"\n\nCONTEXT:\n{context_text}"
+
+# Dùng nội dung từ Session State
+if st.session_state.global_context:
+    system_instruction += f"\n\nCONTEXT TỪ CÁC TÀI LIỆU:\n{st.session_state.global_context}"
 
 if "messages" not in st.session_state: st.session_state.messages = []
 
 st.title("🎓 Dissertation Master AI (Ultimate)")
-st.caption("Full Feature: Voice | Auto-Save | Đọc file từ Drive")
+st.caption("Full Feature: Voice | Auto-Save | Multi-File Analysis")
 st.markdown("---")
 
 for msg in st.session_state.messages:
