@@ -2,3 +2,6 @@ streamlit
 google-generativeai
 pypdf
 python-docx
+SpeechRecognition
+gTTS
+streamlit-mic-recorder
