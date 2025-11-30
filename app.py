@@ -37,11 +37,21 @@ with st.sidebar:
     
     api_key = st.text_input("Nhập Google AI API Key:", type="password")
     
+    # Nút kiểm tra model (Giữ lại cho bạn phòng hờ)
+    if api_key:
+        if st.button("🔴 Kiểm tra Model"):
+            try:
+                genai.configure(api_key=api_key)
+                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                st.code(models)
+            except:
+                pass
+
     st.divider()
     
-    # --- KHU VỰC VOICE CHAT (MỚI) ---
+    # --- KHU VỰC VOICE CHAT ---
     st.subheader("🎤 Voice Chat")
-    st.info("Nhấn nút bên dưới để nói (thay vì gõ phím)")
+    st.info("Nhấn nút đỏ để nói:")
     
     # Widget ghi âm
     audio_bytes = mic_recorder(
@@ -50,7 +60,7 @@ with st.sidebar:
         just_once=True,
         key='recorder'
     )
-    # --------------------------------
+    # --------------------------
     
     st.divider()
     
@@ -96,7 +106,7 @@ if "messages" not in st.session_state:
 
 # --- GIAO DIỆN CHÍNH ---
 st.title("🎓 Dissertation Master AI (Voice Edition)")
-st.caption("Hỗ trợ: Đọc PDF | Xuất Word | Trò chuyện Giọng nói")
+st.caption("Hỗ trợ: Đọc PDF | Xuất Word | Trò chuyện Giọng nói | Đọc văn bản cho người khiếm thị")
 st.markdown("---")
 
 for message in st.session_state.messages:
@@ -175,6 +185,7 @@ if prompt:
             bio = BytesIO()
             doc.save(bio)
             
+            # Chia cột: Cột trái tải Word, Cột phải Đọc Tiếng
             col1, col2 = st.columns([1, 1])
             with col1:
                 st.download_button(
@@ -184,20 +195,22 @@ if prompt:
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
             
-            # --- TÍNH NĂNG 2: ĐỌC THÀNH TIẾNG (TTS) ---
+            # --- TÍNH NĂNG 2: ĐỌC THÀNH TIẾNG (TTS) - KHÔNG GIỚI HẠN ---
             with col2:
-                # Chỉ đọc nếu văn bản không quá dài (để tránh lỗi load lâu)
-                if len(full_response) < 1000: 
-                    try:
+                try:
+                    # Hiển thị thông báo đang xử lý để người dùng chờ
+                    with st.spinner("🔊 Đang tạo giọng đọc (vui lòng chờ chút nếu văn bản dài)..."):
+                        # Xóa bỏ giới hạn ký tự, ép máy đọc toàn bộ
                         tts = gTTS(text=full_response, lang='vi')
-                        # Lưu vào buffer bộ nhớ thay vì file cứng để nhanh hơn
+                        
+                        # Lưu vào bộ nhớ đệm
                         mp3_fp = BytesIO()
                         tts.write_to_fp(mp3_fp)
+                        
+                        # Hiển thị trình phát nhạc
                         st.audio(mp3_fp, format='audio/mp3')
-                    except:
-                        st.info("Văn bản quá dài hoặc lỗi kết nối TTS.")
-                else:
-                    st.info("🔇 Văn bản dài, tự động tắt đọc tiếng để tối ưu.")
+                except Exception as e:
+                    st.error(f"Lỗi tạo âm thanh: {e}")
 
         except Exception as e:
             st.error(f"Lỗi: {e}")
