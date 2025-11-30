@@ -27,9 +27,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ID THƯ MỤC DRIVE CỦA BẠN ---
-# Tất cả file sẽ được đọc từ đây và lưu vào đây
-FOLDER_ID = "1eojKKKoMk4uLBCLfCpVhgWnaoTtOiu8p"
+# --- ID THƯ MỤC GỐC DRIVE CỦA BẠN ---
+ROOT_FOLDER_ID = "1eojKKKoMk4uLBCLfCpVhgWnaoTtOiu8p"
 
 # ==========================================
 # 1. CÁC HÀM XỬ LÝ GOOGLE DRIVE
@@ -48,17 +47,16 @@ def get_drive_service():
         st.error(f"Lỗi xác thực Google: {e}")
         return None
 
-def upload_to_drive(file_obj, filename):
-    """Upload file lên Drive (Tạo mới)"""
+def upload_to_drive(file_obj, filename, target_folder_id=ROOT_FOLDER_ID):
+    """Upload file lên Drive (Mặc định vào thư mục gốc, hoặc thư mục con nếu chọn)"""
     try:
         service = get_drive_service()
         if not service: return "Lỗi kết nối"
 
-        # Tự động thêm thời gian vào tên file để không bị trùng
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         final_filename = f"{filename.replace('.docx', '')}_{timestamp}.docx"
 
-        file_metadata = {'name': final_filename, 'parents': [FOLDER_ID]}
+        file_metadata = {'name': final_filename, 'parents': [target_folder_id]}
         file_obj.seek(0)
         media = MediaIoBaseUpload(file_obj, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
         
@@ -67,22 +65,34 @@ def upload_to_drive(file_obj, filename):
     except Exception as e:
         return f"Error: {str(e)}"
 
-def list_drive_files():
-    """Lấy danh sách tất cả file trong thư mục"""
+def list_subfolders(parent_id):
+    """Liệt kê các thư mục con"""
     try:
         service = get_drive_service()
         if not service: return []
-        # Lấy file trong thư mục, không bị xóa, sắp xếp theo tên
         results = service.files().list(
-            q=f"'{FOLDER_ID}' in parents and trashed=false",
+            q=f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed=false",
+            fields="files(id, name)",
+            orderBy="name"
+        ).execute()
+        return results.get('files', [])
+    except: return []
+
+def list_files_in_folder(folder_id):
+    """Liệt kê file trong một thư mục cụ thể"""
+    try:
+        service = get_drive_service()
+        if not service: return []
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed=false",
             fields="files(id, name, mimeType)",
-            orderBy="name" 
+            orderBy="createdTime desc"
         ).execute()
         return results.get('files', [])
     except: return []
 
 def read_drive_file(file_id, filename):
-    """Tải và đọc nội dung file từ Drive"""
+    """Đọc nội dung file từ Drive"""
     try:
         service = get_drive_service()
         request = service.files().get_media(fileId=file_id)
@@ -94,14 +104,10 @@ def read_drive_file(file_id, filename):
         
         file_stream.seek(0)
         
-        if filename.endswith(".pdf"):
-            return get_pdf_content(file_stream)
-        elif filename.endswith(".docx"):
-            return get_docx_content(file_stream)
-        else:
-            return "" 
-    except Exception as e:
-        return f"Lỗi đọc file: {e}"
+        if filename.endswith(".pdf"): return get_pdf_content(file_stream)
+        elif filename.endswith(".docx"): return get_docx_content(file_stream)
+        else: return "" 
+    except Exception as e: return f"Lỗi đọc file: {e}"
 
 # ==========================================
 # 2. CÁC HÀM ĐỌC FILE LOCAL
@@ -136,21 +142,24 @@ with st.sidebar:
     api_key = st.text_input("Nhập Google AI API Key:", type="password")
     
     st.divider()
-    # Voice
     st.subheader("🎤 Ra lệnh giọng nói")
     audio_bytes = mic_recorder(start_prompt="🔴 Ghi âm", stop_prompt="⏹️ Dừng", just_once=True, key='recorder')
     
     st.divider()
-    work_mode = st.radio("Chế độ làm việc:", ["Nghiên cứu & Tóm tắt", "Viết nháp (Drafting)", "Phản biện & Kiểm tra chéo", "Chuyển đổi LaTeX"])
+    work_mode = st.radio("Chế độ:", ["Nghiên cứu", "Viết nháp", "Phản biện", "LaTeX Conversion"])
     
     st.divider()
-    # --- NGUỒN TÀI LIỆU ---
-    st.subheader("📂 Dữ liệu Luận án")
-    source_option = st.radio("Nguồn dữ liệu:", ["Tải từ máy tính", "Chọn 1 file trên Drive", "🚀 ĐỌC TOÀN BỘ DRIVE"])
+    st.subheader("📂 Quản lý Dữ liệu")
     
-    # Biến toàn cục lưu nội dung
+    # Menu chọn nguồn dữ liệu nâng cấp
+    source_option = st.radio(
+        "Nguồn dữ liệu:", 
+        ["Tải từ máy tính", "📁 Đọc theo Thư mục con (Topics)", "Chọn 1 file lẻ (Gốc)"]
+    )
+    
+    # Biến toàn cục
     if 'global_context' not in st.session_state: st.session_state.global_context = ""
-    if 'file_list_str' not in st.session_state: st.session_state.file_list_str = ""
+    if 'current_folder_id' not in st.session_state: st.session_state.current_folder_id = ROOT_FOLDER_ID
 
     # 1. TẢI TỪ MÁY
     if source_option == "Tải từ máy tính":
@@ -164,68 +173,69 @@ with st.sidebar:
                 st.session_state.global_context = temp_ctx
                 st.success(f"Đã nạp {len(uploaded_files)} file!")
 
-    # 2. CHỌN 1 FILE DRIVE
-    elif source_option == "Chọn 1 file trên Drive":
-        with st.spinner("Đang tải danh sách..."):
-            drive_files = list_drive_files()
-            if drive_files:
-                file_opts = {f['name']: f['id'] for f in drive_files}
-                selected_name = st.selectbox("Chọn file:", list(file_opts.keys()))
-                if st.button("📖 Đọc file này"):
-                    with st.spinner("Đang đọc..."):
-                        content = read_drive_file(file_opts[selected_name], selected_name)
-                        st.session_state.global_context = f"\n=== TÀI LIỆU DRIVE: {selected_name} ===\n{content}\n"
-                        st.success(f"Đã đọc xong!")
-            else: st.warning("Thư mục Drive trống.")
+    # 2. ĐỌC THEO THƯ MỤC CON (TÍNH NĂNG MỚI)
+    elif source_option == "📁 Đọc theo Thư mục con (Topics)":
+        with st.spinner("Đang quét các thư mục chủ đề..."):
+            subfolders = list_subfolders(ROOT_FOLDER_ID)
+            
+            if subfolders:
+                # Tạo danh sách chọn thư mục
+                folder_opts = {f['name']: f['id'] for f in subfolders}
+                selected_folder_name = st.selectbox("Chọn Chủ đề / Chương:", list(folder_opts.keys()))
+                
+                # Cập nhật ID thư mục hiện tại để lưu file về đúng chỗ này
+                st.session_state.current_folder_id = folder_opts[selected_folder_name]
+                
+                if st.button(f"📚 Đọc tất cả trong '{selected_folder_name}'"):
+                    target_id = folder_opts[selected_folder_name]
+                    files_in_folder = list_files_in_folder(target_id)
+                    
+                    if files_in_folder:
+                        progress_bar = st.progress(0)
+                        temp_all_ctx = ""
+                        total = len(files_in_folder)
+                        status = st.empty()
+                        
+                        for i, f in enumerate(files_in_folder):
+                            status.text(f"Đang đọc ({i+1}/{total}): {f['name']}...")
+                            content = read_drive_file(f['id'], f['name'])
+                            if content:
+                                temp_all_ctx += f"\n=== TÀI LIỆU ({selected_folder_name}): {f['name']} ===\n{content}\n"
+                            progress_bar.progress((i + 1) / total)
+                        
+                        st.session_state.global_context = temp_all_ctx
+                        status.empty()
+                        st.success(f"✅ Đã học xong chủ đề: {selected_folder_name}!")
+                    else:
+                        st.warning(f"Thư mục '{selected_folder_name}' đang trống.")
+            else:
+                st.warning("Không tìm thấy thư mục con nào trong Luu_Tru_Luan_Van.")
+                st.info("💡 Mẹo: Hãy vào Google Drive và tạo các thư mục như 'Chương 1', 'Tài liệu tham khảo' bên trong thư mục gốc.")
 
-    # 3. ĐỌC TOÀN BỘ (DÀNH CHO KIỂM TRA CHÉO)
-    elif source_option == "🚀 ĐỌC TOÀN BỘ DRIVE":
-        st.info("Chế độ này sẽ đọc tất cả các chương trong thư mục để AI có cái nhìn tổng thể.")
-        if st.button("📚 Quét & Đọc tất cả"):
-            drive_files = list_drive_files()
-            if drive_files:
-                progress_bar = st.progress(0)
-                temp_all_ctx = ""
-                file_names = []
-                total = len(drive_files)
-                status = st.empty()
-                
-                for i, f in enumerate(drive_files):
-                    status.text(f"Đang đọc ({i+1}/{total}): {f['name']}...")
-                    content = read_drive_file(f['id'], f['name'])
-                    if content:
-                        temp_all_ctx += f"\n=== CHƯƠNG/TÀI LIỆU: {f['name']} ===\n{content}\n"
-                        file_names.append(f['name'])
-                    progress_bar.progress((i + 1) / total)
-                
-                st.session_state.global_context = temp_all_ctx
-                st.session_state.file_list_str = ", ".join(file_names)
-                status.empty()
-                st.success(f"✅ Đã thuộc lòng {total} tài liệu! Sẵn sàng kiểm tra chéo.")
-            else: st.warning("Thư mục trống.")
+    # 3. CHỌN 1 FILE LẺ
+    elif source_option == "Chọn 1 file lẻ (Gốc)":
+        st.session_state.current_folder_id = ROOT_FOLDER_ID # Reset về gốc
+        drive_files = list_files_in_folder(ROOT_FOLDER_ID)
+        if drive_files:
+            file_opts = {f['name']: f['id'] for f in drive_files}
+            selected_name = st.selectbox("Chọn file:", list(file_opts.keys()))
+            if st.button("📖 Đọc file này"):
+                with st.spinner("Đang đọc..."):
+                    content = read_drive_file(file_opts[selected_name], selected_name)
+                    st.session_state.global_context = f"\n=== FILE LẺ: {selected_name} ===\n{content}\n"
+                    st.success("Đã đọc xong!")
 
 # --- CẤU HÌNH AI ---
-system_instruction = "Bạn là 'Dissertation Master AI', trợ lý nghiên cứu sinh Tiến sĩ chuyên nghiệp."
-if work_mode == "Phản biện & Kiểm tra chéo":
-    system_instruction += """
-    NHIỆM VỤ: Kiểm tra tính nhất quán giữa các chương, tìm lỗ hổng logic, so sánh đối chiếu các luận điểm.
-    YÊU CẦU: Chỉ ra cụ thể mâu thuẫn nằm ở file nào, chương nào.
-    """
-elif work_mode == "Viết nháp (Drafting)":
-    system_instruction += " NHIỆM VỤ: Hỗ trợ viết nội dung học thuật, văn phong trang trọng."
-
-# Nhồi toàn bộ kiến thức đã đọc vào não AI
+system_instruction = "Bạn là 'Dissertation Master AI', trợ lý nghiên cứu sinh Tiến sĩ."
+if work_mode == "Phản biện": system_instruction += " NHIỆM VỤ: Phản biện gay gắt, tìm lỗ hổng logic."
 if st.session_state.global_context:
-    system_instruction += f"\n\nDỮ LIỆU NỀN TẢNG TỪ CÁC FILE ĐÃ ĐỌC:\n{st.session_state.global_context}"
+    system_instruction += f"\n\nKIẾN THỨC NỀN TẢNG:\n{st.session_state.global_context}"
 
 if "messages" not in st.session_state: st.session_state.messages = []
 
 # --- GIAO DIỆN CHÍNH ---
 st.title("🎓 Dissertation Master AI")
-if st.session_state.file_list_str:
-    st.caption(f"🧠 Đang nhớ kiến thức từ: {st.session_state.file_list_str}")
-else:
-    st.caption("☁️ Đã kết nối Google Drive: Luu_Tru_Luan_Van")
+st.caption(f"📂 Đang làm việc với thư mục ID: ...{st.session_state.current_folder_id[-6:]}")
 st.markdown("---")
 
 for msg in st.session_state.messages:
@@ -247,7 +257,7 @@ if audio_bytes and audio_bytes['bytes']:
             os.remove(temp_webm_path); os.remove(wav_path)
         except: st.warning("Không nghe rõ.")
 
-if not prompt: prompt = st.chat_input("Nhập câu hỏi (Ví dụ: Kiểm tra mâu thuẫn giữa Chương 1 và 3)...")
+if not prompt: prompt = st.chat_input("Nhập câu hỏi...")
 
 # GENERATE
 if prompt:
@@ -260,7 +270,6 @@ if prompt:
     with st.chat_message("assistant"):
         ph = st.empty(); full_res = ""
         try:
-            # Dùng Gemini 2.0 Flash (Context lớn) để chứa hết nội dung các chương
             model = genai.GenerativeModel("models/gemini-2.0-flash", system_instruction=system_instruction)
             chat = model.start_chat(history=[{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages if m["role"] != "system"])
             for chunk in chat.send_message(prompt, stream=True):
@@ -275,29 +284,26 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "assis
     st.divider()
     st.write("### 🛠️ Công cụ xử lý:")
     
-    # Tạo file Word
-    doc = Document(); doc.add_heading('AI Response / Review Note', 0); doc.add_paragraph(last_msg)
+    doc = Document(); doc.add_heading('Review Note', 0); doc.add_paragraph(last_msg)
     bio = BytesIO(); doc.save(bio); bio.seek(0)
 
     c1, c2, c3 = st.columns(3)
+    with c1: st.download_button("📥 Tải về máy", data=bio, file_name="Review.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     
-    # Nút Tải về máy
-    with c1: st.download_button("📥 Tải về máy", data=bio, file_name="AI_Review.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    
-    # Nút Lưu Drive (Tạo file mới để sửa online)
+    # Nút Lưu Drive thông minh: Lưu thẳng vào thư mục đang chọn
     with c2:
-        if st.button("☁️ Lưu file Review lên Drive"):
-            with st.spinner("Đang lưu lên đám mây..."):
-                # Tên file sẽ là: Review_Result_20251030_1200.docx
-                fid = upload_to_drive(bio, "Review_Result.docx")
-                if "Error" not in fid: st.success("✅ Đã lưu! Bạn có thể mở Drive để sửa online.")
+        if st.button("☁️ Lưu vào Thư mục này"):
+            with st.spinner("Đang lưu..."):
+                # Lưu vào thư mục con đang chọn (hoặc gốc nếu chưa chọn)
+                target_folder = st.session_state.current_folder_id
+                fid = upload_to_drive(bio, "Review_Note.docx", target_folder)
+                if "Error" not in fid: st.success("✅ Đã lưu vào đúng thư mục chủ đề!")
                 else: st.error(f"Lỗi: {fid}")
     
-    # Nút Đọc
     with c3:
-        if st.button("🔊 Đọc to"):
+        if st.button("🔊 Đọc"):
             try:
-                with st.spinner("Đang đọc..."):
+                with st.spinner("Đọc..."):
                     tts = gTTS(text=last_msg, lang='vi')
                     mp3 = BytesIO(); tts.write_to_fp(mp3); st.audio(mp3, format='audio/mp3')
             except: pass
