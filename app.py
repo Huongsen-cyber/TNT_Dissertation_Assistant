@@ -1,7 +1,7 @@
 import streamlit as st
 import traceback
 
-# --- 1. CẤU HÌNH TRANG (BẮT BUỘC ĐẦU TIÊN) ---
+# --- 1. CẤU HÌNH TRANG ---
 st.set_page_config(
     page_title="Dissertation Master AI",
     page_icon="🎓",
@@ -9,9 +9,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- BẮT ĐẦU KHỐI AN TOÀN (TRY-EXCEPT TOÀN CỤC) ---
+# --- BẮT ĐẦU KHỐI AN TOÀN ---
 try:
-    # Import thư viện
     import google.generativeai as genai
     from pypdf import PdfReader
     from docx import Document
@@ -21,7 +20,7 @@ try:
     import tempfile
     import datetime
     
-    # Thư viện Voice & Drive
+    # Voice & Drive
     from streamlit_mic_recorder import mic_recorder
     from gtts import gTTS
     from pydub import AudioSegment
@@ -30,14 +29,12 @@ try:
     from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
     import speech_recognition as sr
 
-    # --- ID THƯ MỤC GỐC (Luu_Tru_Luan_Van) ---
+    # --- ID THƯ MỤC GỐC ---
     ROOT_FOLDER_ID = "1eojKKKoMk4uLBCLfCpVhgWnaoTtOiu8p"
 
     # ==========================================
     # CÁC HÀM XỬ LÝ (DRIVE, FILE, AI)
     # ==========================================
-    
-    # 1. Kết nối Drive
     def get_drive_service():
         if "oauth_token" not in st.secrets:
             st.error("❌ Lỗi: Chưa cấu hình 'oauth_token' trong Secrets!")
@@ -50,7 +47,6 @@ try:
             st.error(f"❌ Lỗi xác thực Google: {e}")
             return None
 
-    # 2. Upload File
     def upload_to_drive(file_obj, filename, folder_id):
         try:
             service = get_drive_service()
@@ -64,19 +60,25 @@ try:
             return file.get('id'), final_filename
         except Exception as e: return None, str(e)
 
-    # 3. Liệt kê thư mục con (Tạo cây thư mục)
-    def list_folders_recursive(service, parent_id):
+    # --- HÀM MỚI: LIỆT KÊ THƯ MỤC CON ---
+    def list_subfolders(service, parent_id):
         folders = []
         try:
+            # Tìm tất cả thư mục con nằm trong thư mục cha
             results = service.files().list(
                 q=f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed=false",
-                fields="files(id, name)", orderBy="name").execute()
+                fields="files(id, name)",
+                orderBy="name"
+            ).execute()
+            
+            # Thêm thư mục gốc vào đầu danh sách
+            folders.append({'id': parent_id, 'name': '📂 Thư mục gốc (Luu_Tru_Luan_Van)'})
+            
             for item in results.get('files', []):
-                folders.append({'id': item['id'], 'name': item['name']})
+                folders.append({'id': item['id'], 'name': f"📁 {item['name']}"})
         except: pass
         return folders
 
-    # 4. Liệt kê file trong thư mục
     def list_files_in_folder(service, folder_id):
         try:
             results = service.files().list(
@@ -85,14 +87,11 @@ try:
             return results.get('files', [])
         except: return []
 
-    # 5. Đọc nội dung file từ Drive (Hỗ trợ PDF, Docx, GDocs)
     def read_drive_file(service, file_id, filename, mimeType):
         try:
             file_stream = BytesIO()
-            # Xử lý Google Docs (Phải Export ra Word mới đọc được)
             if mimeType == 'application/vnd.google-apps.document':
                 request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-            # Xử lý file thường (PDF, Word) - Tải trực tiếp
             else:
                 request = service.files().get_media(fileId=file_id)
                 
@@ -103,9 +102,8 @@ try:
             
             if filename.endswith(".pdf") or mimeType == 'application/pdf': return get_pdf_content(file_stream)
             else: return get_docx_content(file_stream)
-        except Exception as e: return f"[Lỗi đọc file {filename}: {str(e)}]"
+        except Exception as e: return f"[Lỗi đọc: {e}]"
 
-    # 6. Các hàm đọc nội dung chi tiết
     def get_pdf_content(f):
         try:
             reader = PdfReader(f); text = ""
@@ -125,94 +123,86 @@ try:
         else: return get_docx_content(f)
 
     # ==========================================
-    # GIAO DIỆN CHÍNH & LOGIC
+    # GIAO DIỆN CHÍNH
     # ==========================================
-    
-    # Khởi tạo Session State
     if 'global_context' not in st.session_state: st.session_state.global_context = ""
     if 'memory_status' not in st.session_state: st.session_state.memory_status = "Chưa có dữ liệu"
     if 'current_folder_id' not in st.session_state: st.session_state.current_folder_id = ROOT_FOLDER_ID
-    if 'saved_files' not in st.session_state: st.session_state.saved_files = []
+    if 'current_folder_name' not in st.session_state: st.session_state.current_folder_name = "Thư mục gốc"
 
     with st.sidebar:
-        st.title("🎙️ Trung tâm Điều khiển")
-        api_key = st.text_input("Nhập Google AI API Key:", type="password")
+        st.title("🎙️ Điều khiển")
+        api_key = st.text_input("Nhập Google AI Key:", type="password")
         
         st.divider()
-        st.subheader("🎤 Ra lệnh giọng nói")
         audio_bytes = mic_recorder(start_prompt="🔴 Ghi âm", stop_prompt="⏹️ Dừng", key='recorder')
         
         st.divider()
         work_mode = st.radio("Chế độ:", ["Nghiên cứu", "Viết nháp", "Phản biện", "LaTeX"])
         
         st.divider()
-        # --- NÚT DỌN DẸP BỘ NHỚ ---
-        st.info(f"🧠 **Bộ nhớ:** {st.session_state.memory_status}")
-        if st.button("🗑️ Xóa bộ nhớ (Giải phóng RAM)"):
+        # Nút dọn dẹp RAM
+        st.info(f"🧠 {st.session_state.memory_status}")
+        if st.button("🗑️ Xóa bộ nhớ"):
             st.session_state.global_context = ""
             st.session_state.memory_status = "Đã xóa sạch"
             st.rerun()
             
         st.divider()
-        st.subheader("📂 Nguồn Dữ liệu")
-        source_option = st.radio("Chọn:", ["Tải từ máy tính", "📁 Duyệt Google Drive"])
+        st.subheader("📂 Quản lý Dữ liệu")
+        
+        source_option = st.radio("Nguồn:", ["Tải từ máy tính", "📁 Duyệt Google Drive"])
 
-        # ---------------------------------------------------------
-        # CHỨC NĂNG 1: TẢI TỪ MÁY TÍNH (CÓ AUTO-SAVE)
-        # ---------------------------------------------------------
+        # 1. TẢI TỪ MÁY
         if source_option == "Tải từ máy tính":
             uploaded_files = st.file_uploader("Chọn file:", type=["pdf", "docx"], accept_multiple_files=True)
             if uploaded_files:
-                with st.spinner("Đang đọc & Lưu Drive..."):
+                with st.spinner("Đang đọc..."):
                     temp_ctx = ""
                     for f in uploaded_files:
-                        # Auto-Save: Chỉ lưu nếu chưa lưu
-                        if f.name not in st.session_state.saved_files:
-                            fid, fname = upload_to_drive(f, f.name, ROOT_FOLDER_ID)
-                            if fid: 
-                                st.toast(f"✅ Đã lưu '{f.name}'", icon="☁️")
-                                st.session_state.saved_files.append(f.name)
-                        
-                        # Đọc nội dung
+                        upload_to_drive(f, f.name, ROOT_FOLDER_ID)
                         temp_ctx += f"\n=== UPLOAD: {f.name} ===\n{get_local_content(f)}\n"
-                    
                     st.session_state.global_context = temp_ctx
                     st.session_state.memory_status = f"Đã nạp {len(uploaded_files)} file."
                     st.success("Đã nạp xong!")
 
-        # ---------------------------------------------------------
-        # CHỨC NĂNG 2: DUYỆT DRIVE (CÓ CHỌN THƯ MỤC)
-        # ---------------------------------------------------------
+        # 2. DUYỆT DRIVE (NÂNG CẤP)
         elif source_option == "📁 Duyệt Google Drive":
             service = get_drive_service()
             if service:
                 # Bước 1: Chọn Thư mục
-                subfolders = list_folders_recursive(service, ROOT_FOLDER_ID)
-                folder_options = {"📂 Thư mục gốc (Luu_Tru_Luan_Van)": ROOT_FOLDER_ID}
-                for f in subfolders: folder_options[f"📁 {f['name']}"] = f['id']
+                st.write("🔽 **1. Chọn Thư mục Chủ đề**")
+                subfolders = list_subfolders(service, ROOT_FOLDER_ID)
                 
-                sel_label = st.selectbox("Chọn Thư mục chủ đề:", list(folder_options.keys()))
-                sel_id = folder_options[sel_label]
+                # Tạo danh sách chọn
+                folder_map = {item['name']: item['id'] for item in subfolders}
+                selected_folder_name = st.selectbox("Danh sách thư mục:", list(folder_map.keys()))
                 
-                # Cập nhật ID hiện tại để tí nữa lưu file về đúng chỗ này
-                st.session_state.current_folder_id = sel_id
+                # Lưu ID thư mục đã chọn
+                selected_folder_id = folder_map[selected_folder_name]
+                st.session_state.current_folder_id = selected_folder_id
+                st.session_state.current_folder_name = selected_folder_name
 
-                # Bước 2: Liệt kê file trong thư mục đó
-                files = list_files_in_folder(service, sel_id)
+                # Bước 2: Liệt kê & Đọc file
+                files = list_files_in_folder(service, selected_folder_id)
+                
                 if files:
-                    st.write(f"Tìm thấy {len(files)} file.")
+                    st.write(f"📂 Tìm thấy **{len(files)} file** trong '{selected_folder_name}'")
                     
-                    # --- THANH TRƯỢT GIỚI HẠN (QUAN TRỌNG ĐỂ TRÁNH SẬP) ---
-                    max_files = len(files)
-                    limit = st.slider("Số lượng file muốn đọc:", 1, max_files, min(5, max_files))
+                    # --- THANH TRƯỢT CHỌN SỐ LƯỢNG (THEO YÊU CẦU) ---
+                    max_val = len(files)
+                    limit = 1 # Mặc định
+                    if max_val > 1:
+                        limit = st.slider("Số lượng file muốn đọc:", 1, max_val, min(5, max_val))
                     
-                    # Nút đọc hàng loạt
-                    if st.button(f"📚 Đọc {limit} file trong thư mục này"):
-                        with st.spinner("Đang đọc... (Vui lòng chờ)"):
+                    # Nút Đọc
+                    if st.button(f"📚 Đọc {limit} file trong '{selected_folder_name}'"):
+                        with st.spinner("Đang đọc..."):
                             all_ctx = ""
                             prog = st.progress(0)
                             
-                            files_to_read = files[:limit]
+                            files_to_read = files[:limit] # Cắt danh sách theo số lượng chọn
+                            
                             for i, f in enumerate(files_to_read):
                                 try:
                                     content = read_drive_file(service, f['id'], f['name'], f['mimeType'])
@@ -222,11 +212,12 @@ try:
                                 prog.progress((i+1)/limit)
                             
                             st.session_state.global_context = all_ctx
-                            st.session_state.memory_status = f"Đã nhớ {limit} file: {sel_label}"
-                            st.success("✅ Đã học xong!")
-                else: st.warning("Thư mục trống.")
+                            st.session_state.memory_status = f"Đã nhớ {limit} file từ: {selected_folder_name}"
+                            st.success(f"✅ Đã đọc xong {limit} file!")
+                else:
+                    st.warning("Thư mục này trống.")
 
-    # --- CẤU HÌNH AI ---
+    # --- AI & CHAT ---
     sys_prompt = "Bạn là trợ lý học thuật Dissertation Master AI."
     if work_mode == "Phản biện": sys_prompt += " Nhiệm vụ: Phản biện gay gắt."
     if st.session_state.global_context:
@@ -234,15 +225,13 @@ try:
 
     if "messages" not in st.session_state: st.session_state.messages = []
 
-    # --- KHUNG CHAT CHÍNH ---
     st.title("🎓 Dissertation Master AI")
-    st.caption(f"Trạng thái: {st.session_state.memory_status}")
+    st.caption(f"📂 Đang làm việc tại: {st.session_state.current_folder_name}")
     st.markdown("---")
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    # XỬ LÝ INPUT
     prompt = None
     if audio_bytes:
         with st.spinner("🎧 Đang nghe..."):
@@ -254,11 +243,10 @@ try:
                 r = sr.Recognizer()
                 with sr.AudioFile(wav) as s: prompt = r.recognize_google(r.record(s), language="vi-VN")
                 os.remove(tf_path); os.remove(wav)
-            except: st.warning("Không nghe rõ.")
+            except: st.warning("Lỗi Mic.")
 
     if not prompt: prompt = st.chat_input("Nhập câu hỏi...")
 
-    # XỬ LÝ TRẢ LỜI
     if prompt:
         if not api_key: st.error("Thiếu API Key!"); st.stop()
         genai.configure(api_key=api_key)
@@ -268,7 +256,7 @@ try:
         with st.chat_message("assistant"):
             ph = st.empty(); full_res = ""
             try:
-                model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=sys_prompt)
+                model = genai.GenerativeModel("models/gemini-2.0-flash", system_instruction=sys_prompt)
                 chat = model.start_chat(history=[{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages if m["role"] != "system"])
                 for chunk in chat.send_message(prompt, stream=True):
                     if chunk.text: full_res += chunk.text; ph.markdown(full_res + "▌")
@@ -276,28 +264,22 @@ try:
                 st.session_state.messages.append({"role": "assistant", "content": full_res})
             except Exception as e: st.error(f"Lỗi AI: {e}")
 
-    # --- CÔNG CỤ (LUÔN HIỂN THỊ) ---
+    # TOOLS (CỐ ĐỊNH)
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
         last_msg = st.session_state.messages[-1]["content"]
         st.divider()
         st.write("### 🛠️ Công cụ xử lý:")
         
-        doc = Document(); doc.add_heading('Dissertation Draft', 0); doc.add_paragraph(last_msg)
-        bio = BytesIO(); doc.save(bio); bio.seek(0)
+        doc = Document(); doc.add_paragraph(last_msg); bio = BytesIO(); doc.save(bio); bio.seek(0)
         
         c1, c2, c3 = st.columns(3)
-        # Nút 1: Tải về máy
         with c1: st.download_button("📥 Tải về", data=bio, file_name="Review.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        
-        # Nút 2: Lưu Drive (Lưu đúng vào thư mục đang chọn)
         with c2:
             if st.button("☁️ Lưu vào Thư mục này"):
                 with st.spinner("Lưu..."):
                     fid, fname = upload_to_drive(bio, "Ket_Qua_AI.docx", st.session_state.current_folder_id)
-                    if fid: st.success(f"✅ Đã lưu: {fname}")
+                    if fid: st.success(f"✅ Đã lưu vào '{st.session_state.current_folder_name}'!")
                     else: st.error(f"Lỗi: {fid}")
-        
-        # Nút 3: Đọc
         with c3:
             if st.button("🔊 Đọc"):
                 try:
@@ -306,5 +288,5 @@ try:
 
 # --- BẮT LỖI TOÀN CỤC ---
 except Exception as e:
-    st.error("🚨 HỆ THỐNG GẶP LỖI! Chi tiết bên dưới:")
+    st.error("🚨 HỆ THỐNG GẶP LỖI! Chi tiết:")
     st.code(traceback.format_exc())
