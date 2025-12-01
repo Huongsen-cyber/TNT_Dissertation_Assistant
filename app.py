@@ -3,13 +3,44 @@ import traceback
 
 # --- 1. CẤU HÌNH TRANG ---
 st.set_page_config(
-    page_title="Dissertation Master AI",
+    page_title="TNT Dissertation Master AI",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- BẮT ĐẦU KHỐI AN TOÀN ---
+# ==========================================
+# 0. BỘ NÃO TNT V1.1 (NHÚNG TRI THỨC)
+# ==========================================
+TNT_MASTER_PROMPT = """
+ROLE: You are "TNT Advanced AI Editor & Writer V1.1", a specialized assistant for Doctoral Dissertations.
+
+[TNT COMMAND SYSTEM - KNOWLEDGE BASE]:
+You must map User's Natural Language requests to these specific Command Codes:
+
+1. ANALYSIS (Phân tích & Kiểm tra):
+   - WF-DMAI: Deep Structural Analysis (Phân tích cấu trúc, chia đoạn, tìm lỗ hổng).
+   - WF-QACHECK: Check logic, flow, coherence. (Dùng khi user hỏi "bài này có lỗi logic không?", "kiểm tra mạch văn").
+
+2. EDITING (Biên tập & Sửa chữa):
+   - ED-STD: Standard Academic Editing. (Dùng khi user bảo "sửa lỗi chính tả", "làm văn phong hay hơn").
+   - ED-EXT25: Expand analysis (+25%). (Dùng khi user bảo "viết sâu hơn", "mở rộng ý này", "thêm luận cứ").
+   - ED-RED05: Condense text. (Dùng khi user bảo "rút gọn", "viết súc tích lại").
+
+3. WRITING (Viết mới):
+   - WF-GENDRAFT: Generate new content. (Dùng khi user bảo "viết cho tôi chương này", "soạn thảo mục này").
+
+4. FORMATTING (Định dạng):
+   - FMT-FNAF02: Standard 5-page chunk format with Glossary/Footnotes. (Luôn dùng định dạng này cho đầu ra chính thức).
+
+[SMART AGENT BEHAVIOR]:
+If the user says: "Hãy sửa lại chương này cho tôi", you reply:
+"🔍 **Phân tích:** Bạn muốn chỉnh sửa văn phong và ngữ pháp.
+🛠️ **Kích hoạt lệnh:** `ED-STD` + `FMT-FNAF02`
+... [Then execute the task] ..."
+"""
+
+# --- BẮT ĐẦU KHỐI CODE ---
 try:
     import google.generativeai as genai
     from pypdf import PdfReader
@@ -20,7 +51,6 @@ try:
     import tempfile
     import datetime
     
-    # Voice & Drive
     from streamlit_mic_recorder import mic_recorder
     from gtts import gTTS
     from pydub import AudioSegment
@@ -33,7 +63,7 @@ try:
     ROOT_FOLDER_ID = "1eojKKKoMk4uLBCLfCpVhgWnaoTtOiu8p"
 
     # ==========================================
-    # CÁC HÀM XỬ LÝ DRIVE (QUÉT SÂU)
+    # CÁC HÀM XỬ LÝ (DRIVE, FILE)
     # ==========================================
     def get_drive_service():
         if "oauth_token" not in st.secrets:
@@ -60,37 +90,30 @@ try:
             return file.get('id'), final_filename
         except Exception as e: return None, str(e)
 
-    # --- HÀM ĐỆ QUY: LẤY TOÀN BỘ CÂY THƯ MỤC ---
-    # Hàm này sẽ chạy sâu vào trong các thư mục con để lấy đường dẫn
-    def get_all_folders_recursive(service, parent_id, path_prefix=""):
-        all_folders = []
+    # --- HÀM ĐỆ QUY: LẤY CÂY THƯ MỤC ---
+    def get_all_folders_recursive(service, parent_id, prefix=""):
+        folders = []
         try:
             results = service.files().list(
                 q=f"'{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed=false",
-                fields="files(id, name)", orderBy="name"
-            ).execute()
-            
+                fields="files(id, name)", orderBy="name").execute()
             for item in results.get('files', []):
-                current_path = f"{path_prefix}📂 {item['name']}"
-                all_folders.append({'id': item['id'], 'name': current_path})
-                # Gọi lại chính nó để tìm con của thư mục này
-                sub_folders = get_all_folders_recursive(service, item['id'], current_path + " / ")
-                all_folders.extend(sub_folders)
+                folders.append({'id': item['id'], 'name': f"{prefix}📁 {item['name']}"})
+                folders.extend(get_all_folders_recursive(service, item['id'], prefix + "-- "))
         except: pass
-        return all_folders
+        return folders
 
-    # --- HÀM ĐỆ QUY: LẤY TẤT CẢ FILE TRONG THƯ MỤC VÀ CON CỦA NÓ ---
+    # --- HÀM ĐỆ QUY: LẤY FILE (DEEP SCAN) ---
     def list_files_deep(service, folder_id):
         all_files = []
         try:
-            # 1. Lấy file ở thư mục hiện tại
+            # Lấy file thư mục hiện tại
             files = service.files().list(
                 q=f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed=false",
-                fields="files(id, name, mimeType)", orderBy="name"
-            ).execute().get('files', [])
+                fields="files(id, name, mimeType)", orderBy="name").execute().get('files', [])
             all_files.extend(files)
             
-            # 2. Tìm các thư mục con để chui vào lấy tiếp
+            # Lấy file thư mục con
             subfolders = service.files().list(
                 q=f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed=false",
                 fields="files(id)"
@@ -98,7 +121,6 @@ try:
             
             for sub in subfolders:
                 all_files.extend(list_files_deep(service, sub['id']))
-                
         except: pass
         return all_files
 
@@ -109,7 +131,7 @@ try:
                 request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
             else:
                 request = service.files().get_media(fileId=file_id)
-                
+            
             downloader = MediaIoBaseDownload(file_stream, request)
             done = False
             while done is False: status, done = downloader.next_chunk()
@@ -117,7 +139,7 @@ try:
             
             if filename.endswith(".pdf") or mimeType == 'application/pdf': return get_pdf_content(file_stream)
             else: return get_docx_content(file_stream)
-        except Exception as e: return f""
+        except Exception as e: return "" 
 
     def get_pdf_content(f):
         try:
@@ -138,29 +160,33 @@ try:
         else: return get_docx_content(f)
 
     # ==========================================
-    # QUẢN LÝ TRẠNG THÁI (SESSION STATE)
+    # QUẢN LÝ SESSION STATE (BỘ NHỚ)
     # ==========================================
     if 'global_context' not in st.session_state: st.session_state.global_context = ""
-    if 'read_history' not in st.session_state: st.session_state.read_history = [] # Danh sách tên file đã đọc
+    if 'read_history' not in st.session_state: st.session_state.read_history = [] # Lưu danh sách tên file đã đọc
     if 'current_folder_id' not in st.session_state: st.session_state.current_folder_id = ROOT_FOLDER_ID
-    if 'folder_tree_cache' not in st.session_state: st.session_state.folder_tree_cache = [] # Cache danh sách thư mục cho nhanh
+    if 'current_folder_name' not in st.session_state: st.session_state.current_folder_name = "Thư mục gốc"
+    if 'folder_tree_cache' not in st.session_state: st.session_state.folder_tree_cache = []
+    if 'found_files_cache' not in st.session_state: st.session_state.found_files_cache = []
 
+    # ==========================================
+    # GIAO DIỆN SIDEBAR
+    # ==========================================
     with st.sidebar:
-        st.title("🎙️ Điều khiển")
+        st.title("🎙️ TNT Smart Center")
         api_key = st.text_input("Nhập Google AI Key:", type="password")
         
         st.divider()
         audio_bytes = mic_recorder(start_prompt="🔴 Ghi âm", stop_prompt="⏹️ Dừng", key='recorder')
-        st.divider()
-        work_mode = st.radio("Chế độ:", ["Nghiên cứu", "Viết nháp", "Phản biện", "LaTeX"])
         
         st.divider()
-        # Hiển thị những gì AI đang nhớ
-        with st.expander("🧠 Bộ nhớ AI (Đã đọc)", expanded=False):
+        # HIỂN THỊ TRẠNG THÁI BỘ NHỚ THÔNG MINH
+        with st.expander(f"🧠 Bộ nhớ: {len(st.session_state.read_history)} file", expanded=False):
             if st.session_state.read_history:
+                st.write("**Các file đã nạp:**")
                 for f in st.session_state.read_history:
-                    st.write(f"✅ {f}")
-                if st.button("🗑️ Quên hết (Reset)"):
+                    st.caption(f"✅ {f}")
+                if st.button("🗑️ Quên tất cả (Reset)"):
                     st.session_state.global_context = ""
                     st.session_state.read_history = []
                     st.rerun()
@@ -169,115 +195,130 @@ try:
 
         st.divider()
         st.subheader("📂 Quản lý Dữ liệu")
-        
         source_option = st.radio("Nguồn:", ["Tải từ máy tính", "📁 Duyệt Google Drive"])
 
-        # 1. TẢI TỪ MÁY
+        # 1. TẢI TỪ MÁY (CÓ CHECK TRÙNG LẶP)
         if source_option == "Tải từ máy tính":
             uploaded_files = st.file_uploader("Chọn file:", type=["pdf", "docx"], accept_multiple_files=True)
             if uploaded_files:
-                with st.spinner("Đang đọc..."):
-                    new_ctx = ""
-                    new_files = []
-                    for f in uploaded_files:
-                        upload_to_drive(f, f.name, ROOT_FOLDER_ID)
-                        new_ctx += f"\n=== UPLOAD: {f.name} ===\n{get_local_content(f)}\n"
-                        new_files.append(f.name)
-                    
-                    # Cộng dồn vào bộ nhớ
-                    st.session_state.global_context += new_ctx
-                    st.session_state.read_history.extend(new_files)
-                    st.success(f"Đã nạp thêm {len(new_files)} file!")
+                if st.button("🚀 Nạp dữ liệu mới"):
+                    with st.spinner("Đang xử lý..."):
+                        new_ctx = ""
+                        count_new = 0
+                        count_skip = 0
+                        
+                        for f in uploaded_files:
+                            # --- LOGIC CHỐNG TRÙNG ---
+                            if f.name in st.session_state.read_history:
+                                count_skip += 1
+                                continue # Bỏ qua file này
+                            
+                            # Nếu chưa có thì xử lý
+                            upload_to_drive(f, f.name, ROOT_FOLDER_ID)
+                            new_ctx += f"\n=== TÀI LIỆU: {f.name} ===\n{get_local_content(f)}\n"
+                            st.session_state.read_history.append(f.name)
+                            count_new += 1
+                        
+                        if count_new > 0:
+                            st.session_state.global_context += new_ctx
+                            st.success(f"✅ Đã nạp thêm {count_new} file mới.")
+                        
+                        if count_skip > 0:
+                            st.info(f"ℹ️ Đã bỏ qua {count_skip} file cũ (đã có trong bộ nhớ).")
 
-        # 2. DUYỆT DRIVE (CÂY THƯ MỤC THÔNG MINH)
+        # 2. DUYỆT DRIVE (CÓ CHECK TRÙNG LẶP)
         elif source_option == "📁 Duyệt Google Drive":
             service = get_drive_service()
             if service:
-                # Load danh sách thư mục (chỉ load 1 lần cho nhanh)
                 if not st.session_state.folder_tree_cache:
-                    with st.spinner("Đang quét cấu trúc thư mục..."):
-                        # Thêm gốc
-                        tree = [{'id': ROOT_FOLDER_ID, 'name': '🏠 Thư mục gốc'}]
-                        # Thêm con
+                    with st.spinner("Đang quét cấu trúc..."):
+                        tree = [{'id': ROOT_FOLDER_ID, 'name': '📂 Thư mục gốc'}]
                         tree.extend(get_all_folders_recursive(service, ROOT_FOLDER_ID))
                         st.session_state.folder_tree_cache = tree
                 
-                # Dropdown chọn thư mục
                 folder_map = {item['name']: item['id'] for item in st.session_state.folder_tree_cache}
-                selected_folder_name = st.selectbox("Chọn Chủ đề / Thư mục:", list(folder_map.keys()))
-                
-                # Lưu ID để tí nữa lưu file về đây
+                selected_folder_name = st.selectbox("Chọn Chủ đề:", list(folder_map.keys()))
                 selected_folder_id = folder_map[selected_folder_name]
-                st.session_state.current_folder_id = selected_folder_id
-
-                # Tùy chọn đọc
-                read_mode = st.radio("Phạm vi đọc:", ["Chỉ file trong thư mục này", "🚀 Quét sâu (Cả thư mục con)"])
                 
-                # Nút Quét file
-                if st.button("🔍 Tìm file trong thư mục này"):
-                    with st.spinner("Đang tìm file..."):
+                st.session_state.current_folder_id = selected_folder_id
+                st.session_state.current_folder_name = selected_folder_name
+
+                read_mode = st.radio("Phạm vi:", ["File trong thư mục này", "🚀 Quét sâu (Cả thư mục con)"])
+                
+                if st.button("🔍 Tìm file"):
+                    with st.spinner("Đang tìm..."):
                         if read_mode == "🚀 Quét sâu (Cả thư mục con)":
                             files = list_files_deep(service, selected_folder_id)
                         else:
-                            # Chỉ lấy cấp 1
                             files = service.files().list(
                                 q=f"'{selected_folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed=false",
                                 fields="files(id, name, mimeType)", orderBy="name").execute().get('files', [])
-                        
-                        # Lưu danh sách file tìm được vào session để không bị mất khi reload
-                        st.session_state.found_files = files
-                        st.rerun() # Tải lại để hiển thị danh sách bên dưới
+                        st.session_state.found_files_cache = files
+                        st.rerun()
 
-                # Hiển thị danh sách file đã tìm thấy
-                if 'found_files' in st.session_state and st.session_state.found_files:
-                    files = st.session_state.found_files
+                if st.session_state.found_files_cache:
+                    files = st.session_state.found_files_cache
                     st.write(f"📂 Tìm thấy **{len(files)} file**.")
                     
-                    # Thanh trượt chọn số lượng
-                    limit = 1
-                    if len(files) > 1:
-                        limit = st.slider("Số lượng file muốn đọc:", 1, len(files), min(5, len(files)))
-                    
-                    # Nút Đọc thật sự
-                    if st.button(f"📚 Đọc {limit} file vào bộ nhớ AI"):
-                        with st.spinner("Đang đọc và học..."):
-                            added_ctx = ""
-                            added_names = []
-                            prog = st.progress(0)
-                            
-                            files_to_read = files[:limit]
-                            for i, f in enumerate(files_to_read):
-                                content = read_drive_file(service, f['id'], f['name'], f['mimeType'])
-                                if len(content) > 50:
-                                    added_ctx += f"\n=== TÀI LIỆU DRIVE: {f['name']} ===\n{content}\n"
-                                    added_names.append(f['name'])
-                                prog.progress((i+1)/limit)
-                            
-                            # CỘNG DỒN VÀO BỘ NHỚ (KHÔNG GHI ĐÈ)
-                            st.session_state.global_context += added_ctx
-                            st.session_state.read_history.extend(added_names)
-                            
-                            # Thông báo Chat
-                            msg = f"✅ **Đã nạp thêm {len(added_names)} tài liệu vào bộ nhớ:**\n- " + "\n- ".join(added_names)
-                            st.session_state.messages.append({"role": "assistant", "content": msg})
-                            st.rerun()
+                    max_val = len(files)
+                    if max_val > 0:
+                        limit = st.slider("Số lượng đọc:", 1, max_val, min(5, max_val))
+                        
+                        if st.button(f"📚 Đọc {limit} file"):
+                            with st.spinner("Đang đọc và lọc dữ liệu cũ..."):
+                                added_ctx = ""
+                                count_new = 0
+                                count_skip = 0
+                                prog = st.progress(0)
+                                
+                                files_to_read = files[:limit]
+                                for i, f in enumerate(files_to_read):
+                                    # --- LOGIC CHỐNG TRÙNG ---
+                                    if f['name'] in st.session_state.read_history:
+                                        count_skip += 1
+                                        prog.progress((i+1)/limit)
+                                        continue
 
-    # --- AI & CHAT ---
-    sys_prompt = "Bạn là trợ lý học thuật Dissertation Master AI."
-    if work_mode == "Phản biện": sys_prompt += " Nhiệm vụ: Phản biện gay gắt."
+                                    try:
+                                        content = read_drive_file(service, f['id'], f['name'], f['mimeType'])
+                                        if len(content) > 50:
+                                            added_ctx += f"\n=== TÀI LIỆU DRIVE: {f['name']} ===\n{content}\n"
+                                            st.session_state.read_history.append(f['name'])
+                                            count_new += 1
+                                    except: pass
+                                    prog.progress((i+1)/limit)
+                                
+                                st.session_state.global_context += added_ctx
+                                
+                                msg = ""
+                                if count_new > 0:
+                                    msg += f"✅ **Đã nạp thêm {count_new} tài liệu mới.**\n"
+                                if count_skip > 0:
+                                    msg += f"ℹ️ **Đã bỏ qua {count_skip} tài liệu cũ** (tránh trùng lặp).\n"
+                                
+                                msg += f"\nTổng bộ nhớ hiện tại: {len(st.session_state.read_history)} file."
+                                st.session_state.messages.append({"role": "assistant", "content": msg})
+                                st.rerun()
+                    else: st.warning("Không có file nào.")
+
+    # ==========================================
+    # CẤU HÌNH AI
+    # ==========================================
+    full_system_instruction = TNT_MASTER_PROMPT
     if st.session_state.global_context:
-        sys_prompt += f"\n\nKIẾN THỨC NỀN TẢNG (TÍCH LŨY):\n{st.session_state.global_context}"
+        full_system_instruction += f"\n\n[USER PROVIDED CONTEXT]:\n{st.session_state.global_context}"
 
     if "messages" not in st.session_state: st.session_state.messages = []
 
-    st.title("🎓 Dissertation Master AI")
-    # Hiển thị folder đang chọn để biết sẽ lưu file vào đâu
-    st.caption(f"📂 Thư mục làm việc hiện tại: {selected_folder_name if 'selected_folder_name' in locals() else 'Thư mục gốc'}")
+    # --- GIAO DIỆN CHAT ---
+    st.title("🎓 TNT Dissertation Master AI")
+    st.caption(f"📂 Vị trí: {st.session_state.current_folder_name} | 🧠 Đã nhớ: {len(st.session_state.read_history)} file")
     st.markdown("---")
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
+    # XỬ LÝ INPUT
     prompt = None
     if audio_bytes:
         with st.spinner("🎧 Đang nghe..."):
@@ -291,7 +332,7 @@ try:
                 os.remove(tf_path); os.remove(wav)
             except: st.warning("Lỗi Mic.")
 
-    if not prompt: prompt = st.chat_input("Nhập câu hỏi...")
+    if not prompt: prompt = st.chat_input("Nhập yêu cầu...")
 
     if prompt:
         if not api_key: st.error("Thiếu API Key!"); st.stop()
@@ -302,7 +343,7 @@ try:
         with st.chat_message("assistant"):
             ph = st.empty(); full_res = ""
             try:
-                model = genai.GenerativeModel("models/gemini-2.0-flash", system_instruction=sys_prompt)
+                model = genai.GenerativeModel("models/gemini-2.0-flash", system_instruction=full_system_instruction)
                 chat = model.start_chat(history=[{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages if m["role"] != "system"])
                 for chunk in chat.send_message(prompt, stream=True):
                     if chunk.text: full_res += chunk.text; ph.markdown(full_res + "▌")
@@ -310,7 +351,7 @@ try:
                 st.session_state.messages.append({"role": "assistant", "content": full_res})
             except Exception as e: st.error(f"Lỗi AI: {e}")
 
-    # TOOLS
+    # TOOLS (CỐ ĐỊNH)
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
         last_msg = st.session_state.messages[-1]["content"]
         st.divider()
@@ -319,12 +360,12 @@ try:
         doc = Document(); doc.add_paragraph(last_msg); bio = BytesIO(); doc.save(bio); bio.seek(0)
         
         c1, c2, c3 = st.columns(3)
-        with c1: st.download_button("📥 Tải về", data=bio, file_name="Review.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        with c1: st.download_button("📥 Tải về", data=bio, file_name="TNT_Output.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with c2:
             if st.button("☁️ Lưu vào Thư mục này"):
                 with st.spinner("Lưu..."):
-                    fid, fname = upload_to_drive(bio, "Ket_Qua_AI.docx", st.session_state.current_folder_id)
-                    if fid: st.success(f"✅ Đã lưu vào Drive!")
+                    fid, fname = upload_to_drive(bio, "TNT_Output.docx", st.session_state.current_folder_id)
+                    if fid: st.success(f"✅ Đã lưu vào '{st.session_state.current_folder_name}'!")
                     else: st.error(f"Lỗi: {fid}")
         with c3:
             if st.button("🔊 Đọc"):
@@ -332,7 +373,6 @@ try:
                     tts = gTTS(text=last_msg, lang='vi'); mp3 = BytesIO(); tts.write_to_fp(mp3); st.audio(mp3, format='audio/mp3')
                 except: pass
 
-# --- BẮT LỖI ---
 except Exception as e:
     st.error("🚨 HỆ THỐNG GẶP LỖI! Chi tiết:")
     st.code(traceback.format_exc())
