@@ -193,6 +193,7 @@ try:
                     max_val = len(files)
                     limit = 1 # Mặc định
                     if max_val > 1:
+                        # Giới hạn max là 20 file để tránh sập RAM
                         limit = st.slider("Số lượng file muốn đọc:", 1, max_val, min(5, max_val))
                     
                     # Nút Đọc
@@ -203,17 +204,31 @@ try:
                             
                             files_to_read = files[:limit] # Cắt danh sách theo số lượng chọn
                             
+                            read_files_list = []
                             for i, f in enumerate(files_to_read):
                                 try:
                                     content = read_drive_file(service, f['id'], f['name'], f['mimeType'])
                                     if len(content) > 50:
                                         all_ctx += f"\n=== TÀI LIỆU: {f['name']} ===\n{content}\n"
+                                        read_files_list.append(f['name'])
                                 except: pass
                                 prog.progress((i+1)/limit)
                             
                             st.session_state.global_context = all_ctx
                             st.session_state.memory_status = f"Đã nhớ {limit} file từ: {selected_folder_name}"
-                            st.success(f"✅ Đã đọc xong {limit} file!")
+                            
+                            # Thông báo danh sách file đã đọc vào Chat (Tự động gửi tin nhắn hệ thống)
+                            file_list_str = "\n- ".join(read_files_list)
+                            remaining_files = max_val - limit
+                            
+                            msg_content = f"✅ **Đã đọc xong {len(read_files_list)} file trong thư mục '{selected_folder_name}':**\n- {file_list_str}"
+                            if remaining_files > 0:
+                                msg_content += f"\n\n⚠️ **Lưu ý:** Vẫn còn **{remaining_files} file** chưa đọc trong thư mục này. Nếu cần, bạn hãy tăng số lượng ở thanh trượt và đọc tiếp."
+                            else:
+                                msg_content += "\n\n🎉 **Đã đọc hết toàn bộ file trong thư mục này!**"
+                                
+                            st.session_state.messages.append({"role": "assistant", "content": msg_content})
+                            st.rerun() # Tải lại để hiện tin nhắn
                 else:
                     st.warning("Thư mục này trống.")
 
@@ -275,6 +290,7 @@ try:
         c1, c2, c3 = st.columns(3)
         with c1: st.download_button("📥 Tải về", data=bio, file_name="Review.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with c2:
+            # Lưu vào đúng thư mục đang chọn
             if st.button("☁️ Lưu vào Thư mục này"):
                 with st.spinner("Lưu..."):
                     fid, fname = upload_to_drive(bio, "Ket_Qua_AI.docx", st.session_state.current_folder_id)
