@@ -10,7 +10,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# 0. BỘ NÃO TNT V1.1
+# 0. BỘ NÃO TNT V1.1 (TRÍ TUỆ CHỈ ĐẠO)
 # ==========================================
 TNT_MASTER_PROMPT = """
 ROLE: You are "TNT Advanced AI Editor & Writer V1.1", a specialized assistant for Doctoral Dissertations.
@@ -25,7 +25,7 @@ ROLE: You are "TNT Advanced AI Editor & Writer V1.1", a specialized assistant fo
 Identify user intent -> Suggest TNT Code -> Execute.
 """
 
-# --- BẮT ĐẦU KHỐI CODE ---
+# --- BẮT ĐẦU KHỐI CODE CHÍNH ---
 try:
     import google.generativeai as genai
     from pypdf import PdfReader
@@ -39,6 +39,7 @@ try:
     from streamlit_mic_recorder import mic_recorder
     from gtts import gTTS
     from pydub import AudioSegment
+    # Thư viện Google Drive OAUTH
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
@@ -48,7 +49,7 @@ try:
     ROOT_FOLDER_ID = "1eojKKKoMk4uLBCLfCpVhgWnaoTtOiu8p"
 
     # ==========================================
-    # CÁC HÀM XỬ LÝ GOOGLE DRIVE
+    # CÁC HÀM XỬ LÝ (DRIVE OAUTH)
     # ==========================================
     def get_drive_service():
         if "oauth_token" not in st.secrets:
@@ -75,10 +76,9 @@ try:
             return file.get('id'), final_filename
         except Exception as e: return None, str(e)
 
-    # --- HÀM MỚI: TẠO THƯ MỤC ---
-    def create_drive_folder(folder_name, parent_id):
+    # --- HÀM MỚI: TẠO THƯ MỤC CON ---
+    def create_drive_folder(service, folder_name, parent_id):
         try:
-            service = get_drive_service()
             file_metadata = {
                 'name': folder_name,
                 'mimeType': 'application/vnd.google-apps.folder',
@@ -98,6 +98,7 @@ try:
                 fields="files(id, name)", orderBy="name").execute()
             for item in results.get('files', []):
                 folders.append({'id': item['id'], 'name': f"{prefix}📁 {item['name']}"})
+                # Đệ quy tìm con
                 folders.extend(get_all_folders_recursive(service, item['id'], prefix + "-- "))
         except: pass
         return folders
@@ -162,7 +163,7 @@ try:
         api_key = st.text_input("Nhập Google AI Key:", type="password")
         
         st.divider()
-        audio_bytes = mic_recorder(start_prompt="🔴 Ghi âm", stop_prompt="⏹️ Dừng", key='recorder')
+        audio_bytes = mic_recorder(start_prompt="🔴 Ghi âm (Ý định)", stop_prompt="⏹️ Dừng", key='recorder')
         
         st.divider()
         st.info(f"🧠 {st.session_state.memory_status}")
@@ -203,25 +204,27 @@ try:
                 folder_map = {item['name']: item['id'] for item in st.session_state.folder_tree_cache}
                 selected_folder_name = st.selectbox("Chọn vị trí làm việc:", list(folder_map.keys()))
                 
+                # Cập nhật vị trí hiện tại
                 selected_folder_id = folder_map[selected_folder_name]
                 st.session_state.current_folder_id = selected_folder_id
                 st.session_state.current_folder_name = selected_folder_name
 
-                # --- TÍNH NĂNG MỚI: TẠO THƯ MỤC CON ---
-                with st.expander("➕ Tạo Thư mục mới tại đây"):
-                    new_folder_name = st.text_input("Nhập tên thư mục muốn tạo:")
-                    if st.button("Tạo thư mục"):
+                # --- CÔNG CỤ TẠO THƯ MỤC MỚI ---
+                with st.expander("➕ Tạo Thư mục con tại đây"):
+                    new_folder_name = st.text_input("Tên thư mục mới:")
+                    if st.button("Tạo ngay"):
                         if new_folder_name:
-                            with st.spinner("Đang tạo..."):
-                                res = create_drive_folder(new_folder_name, selected_folder_id)
-                                if res:
-                                    st.success(f"✅ Đã tạo thư mục: {new_folder_name}")
-                                    # Xóa cache để load lại cây thư mục mới
+                            with st.spinner("Đang tạo trên Drive..."):
+                                # Tạo folder con bên trong folder đang chọn
+                                res_id = create_drive_folder(service, new_folder_name, selected_folder_id)
+                                if res_id:
+                                    st.success(f"✅ Đã tạo: {new_folder_name}")
+                                    # Xóa cache để load lại danh sách mới
                                     st.session_state.folder_tree_cache = []
                                     st.rerun()
                                 else:
-                                    st.error("Lỗi khi tạo thư mục.")
-                # --------------------------------------
+                                    st.error("Lỗi tạo thư mục.")
+                # -------------------------------
 
                 # Liệt kê file
                 files = list_files_in_folder(service, selected_folder_id)
@@ -233,7 +236,7 @@ try:
                         limit = st.slider("Số lượng đọc:", 1, max_val, min(5, max_val))
                     
                     if st.button(f"📚 Đọc {limit} file"):
-                        with st.spinner("Đang học..."):
+                        with st.spinner("Đang đọc và học..."):
                             all_ctx = ""
                             prog = st.progress(0)
                             files_to_read = files[:limit]
@@ -250,26 +253,31 @@ try:
                             
                             st.session_state.global_context = all_ctx
                             st.session_state.memory_status = f"Đã nhớ {len(read_names)} file từ: {selected_folder_name}"
+                            
                             msg = f"✅ **Đã đọc xong:**\n- " + "\n- ".join(read_names)
                             st.session_state.messages.append({"role": "assistant", "content": msg})
                             st.rerun()
                 else: st.warning("Thư mục này trống.")
 
-    # --- CẤU HÌNH AI ---
+    # ==========================================
+    # CẤU HÌNH AI (NHÚNG TNT MASTER PROMPT)
+    # ==========================================
+    
     full_system_instruction = TNT_MASTER_PROMPT
     if st.session_state.global_context:
         full_system_instruction += f"\n\n[USER PROVIDED CONTEXT]:\n{st.session_state.global_context}"
 
     if "messages" not in st.session_state: st.session_state.messages = []
 
+    # --- GIAO DIỆN CHAT ---
     st.title("🎓 TNT Dissertation Master AI")
-    st.caption(f"📂 Vị trí: {st.session_state.current_folder_name}")
+    st.caption(f"📂 Vị trí lưu file: {st.session_state.current_folder_name}")
     st.markdown("---")
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    # INPUT
+    # XỬ LÝ INPUT
     prompt = None
     if audio_bytes:
         with st.spinner("🎧 Đang nghe..."):
@@ -283,7 +291,7 @@ try:
                 os.remove(tf_path); os.remove(wav)
             except: st.warning("Lỗi Mic.")
 
-    if not prompt: prompt = st.chat_input("Nhập yêu cầu...")
+    if not prompt: prompt = st.chat_input("Nhập yêu cầu (VD: Sửa lại chương này cho hay hơn)...")
 
     if prompt:
         if not api_key: st.error("Thiếu API Key!"); st.stop()
@@ -294,6 +302,7 @@ try:
         with st.chat_message("assistant"):
             ph = st.empty(); full_res = ""
             try:
+                # Dùng Gemini 2.0 Flash
                 model = genai.GenerativeModel("models/gemini-2.0-flash", system_instruction=full_system_instruction)
                 chat = model.start_chat(history=[{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages if m["role"] != "system"])
                 for chunk in chat.send_message(prompt, stream=True):
@@ -313,8 +322,10 @@ try:
         c1, c2, c3 = st.columns(3)
         with c1: st.download_button("📥 Tải về", data=bio, file_name="TNT_Output.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with c2:
+            # NÚT LƯU THÔNG MINH
             if st.button("☁️ Lưu vào Thư mục này"):
                 with st.spinner("Lưu..."):
+                    # Lưu vào đúng thư mục đang hiển thị ở Caption
                     fid, fname = upload_to_drive(bio, "TNT_Output.docx", st.session_state.current_folder_id)
                     if fid: st.success(f"✅ Đã lưu vào '{st.session_state.current_folder_name}'!")
                     else: st.error(f"Lỗi: {fid}")
